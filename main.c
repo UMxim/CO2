@@ -3,7 +3,7 @@
 
 // ==== TIMER ====
 volatile uint32_t timer_s = 0;
-
+volatile uint8_t reg[16]={0};
 INTERRUPT_HANDLER(TIM1_UPD_OVF_TRG_BRK_IRQHandler, 11)
 {
   timer_s++;
@@ -74,8 +74,16 @@ uint8_t RxUart(uint8_t *buff, uint16_t size)
 
 void InitI2C()
 {
+
   I2C_Init(100000, 1, I2C_DUTYCYCLE_2, I2C_ACK_NONE, I2C_ADDMODE_7BIT , 2 );
   I2C_Cmd(ENABLE);
+  
+  I2C_GenerateSTART(ENABLE);  
+  while ( I2C_GetFlagStatus(I2C_FLAG_STARTDETECTION) != SET) ;
+  
+  I2C_Send7bitAddress(0xC0, I2C_DIRECTION_TX);  
+  while ( I2C_GetFlagStatus(I2C_FLAG_ADDRESSSENTMATCHED) != SET) ;
+  while ( I2C_GetFlagStatus(I2C_FLAG_TRANSMITTERRECEIVER) != SET) ;
 }
 
 // ==== INIT ====
@@ -96,29 +104,44 @@ void Init(void)
   InitUART();
   InitI2C();
   
-   GPIO_Init(GPIOB, GPIO_PIN_5, GPIO_MODE_OUT_OD_LOW_SLOW);
+  // GPIO_Init(GPIOB, GPIO_PIN_5, GPIO_MODE_OUT_OD_LOW_SLOW);
   
 }
 
-
+void SendI2CData(uint16_t data)
+{  
+  data &= 0x0FFF;
+  while ( I2C_GetFlagStatus(I2C_FLAG_TXEMPTY) == RESET) ;
+  I2C_SendData(data>>8);
+  
+  while ( I2C_GetFlagStatus(I2C_FLAG_TXEMPTY) == RESET) ;
+  I2C_SendData(data);
+  while ( I2C_GetFlagStatus(I2C_FLAG_TRANSFERFINISHED) == RESET) ;
+  //I2C_GenerateSTOP(ENABLE);
+}
 
 const double C = 423.8477;
 const double k = -17.2023;
 double y;
 
-const uint8_t TxBuff[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+uint8_t TxBuff[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+uint8_t RxBuff[9];
+volatile uint16_t CO2 = 0;
+
 int main( void )
 {
   Init();
   while(1)
-  {
+  {  
     uint32_t currentTim = timer_s;
     while (currentTim == timer_s) ;
     y = k*log(timer_s+100) + C;
-    GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+   // GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
     TxUart(TxBuff, sizeof(TxBuff));
-    
-    
-    
+    RxUart(RxBuff, sizeof(RxBuff));
+    CO2 += 0xFF;//(RxBuff[2]<<8) + RxBuff[3];
+    if (CO2 > 0x0FFF) CO2 = 0;
+    SendI2CData(CO2);   
   }
+  
 }
