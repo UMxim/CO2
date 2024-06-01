@@ -135,13 +135,22 @@ int main( void )
   {  
     uint32_t currentTim = timer_s;
     while (currentTim == timer_s) ;
-    y = k*log(timer_s+100) + C;
-   // GPIO_WriteReverse(GPIOB, GPIO_PIN_5);
+   
     TxUart(TxBuff, sizeof(TxBuff));
     RxUart(RxBuff, sizeof(RxBuff));
-    CO2 += 0xFF;//(RxBuff[2]<<8) + RxBuff[3];
-    if (CO2 > 0x0FFF) CO2 = 0;
-    SendI2CData(CO2);   
+    CO2 = (RxBuff[2]<<8) + RxBuff[3];
+    
+    if(timer_s <= 180)
+    {
+      CO2 = 2800 - (10*timer_s);
+    }
+    y = k*log(CO2) + C; // â ìÂ 
+    y *= 10;
+    // mV convert
+    uint32_t sample = (4096 * y) / 3300;
+    
+    
+    SendI2CData(sample);   
   }
   
 }
