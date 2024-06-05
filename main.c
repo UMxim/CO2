@@ -5,7 +5,7 @@
 #define LCD_DATA  GPIOC, GPIO_PIN_6
 #define LCD_CLK   GPIOC, GPIO_PIN_7
 
-#define HEAT_TIME_S 1800
+#define HEAT_TIME_S 180
 
 uint16_t co2;
 uint8_t hum;
@@ -164,7 +164,7 @@ const uint8_t lcd_def[10] =
   0
 };
 
-const uint8_t lcd_digit[12] = {0x5F, 0x50, 0x6B, 0x79, 0x74, 0x3D, 0x3F, 0x58, 0x7F, 0x7D, 0x2F}; // 0 1 2 3 4 5 6 7 8 9 E
+const uint8_t lcd_digit[12] = {0x5F, 0x50, 0x6B, 0x79, 0x74, 0x3D, 0x3F, 0x58, 0x7F, 0x7D, 0x76, 0x2F}; // 0 1 2 3 4 5 6 7 8 9 H E
 // Отправка нескольких бит (команда или код команды. Или байт). Только data и clk
 void LCD_SendWord(uint16_t word, uint8_t bits)
 {
@@ -243,15 +243,20 @@ void LCD_Update()
   memcpy(LCD_data, lcd_def, 10);
   uint8_t tmp[4];
   // co2
-  valToLCD(co2 & 0x7FFF, tmp);  
+  valToLCD(co2 & 0x3FFF, tmp);  
   
   LCD_data[4] |= (tmp[0] > 0) ? lcd_digit[tmp[0]] : 0;
   LCD_data[3] |= lcd_digit[tmp[1]];
   LCD_data[2] |= lcd_digit[tmp[2]];
   LCD_data[1] |= lcd_digit[tmp[3]];      
   
-  if (co2 & 0x8000) LCD_data[4] = lcd_digit[10];  
-  co2 &= 0x7FFF;
+  if (co2 & 0x8000) LCD_data[4] = lcd_digit[11];  
+  if (co2 & 0x4000) 
+  {
+    LCD_data[4] = lcd_digit[10];  
+    co2 *= 10;
+  }
+  co2 &= 0x3FFF;
   
   LCD_data[0] |= 1<<3;
   if (co2 >= 500)  LCD_data[0] |= 1<<2;
@@ -277,7 +282,7 @@ void LCD_Update()
 
 
 uint8_t TxBuff[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
-uint8_t RxBuff[9];
+uint8_t RxBuff[9] = {0,0,4,12};
 
 int main( void )
 {
@@ -300,7 +305,7 @@ int main( void )
     if ( timer_s < HEAT_TIME_S)
     {
       co2 = HEAT_TIME_S - timer_s;
-      //co2 += 0x8000; // флаг установки символа H
+      co2 += 0x4000; // флаг установки символа H
     }
     else
     {
