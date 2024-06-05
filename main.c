@@ -1,9 +1,19 @@
 #include "stm8s.h"
-#include <math.h>
+#include <string.h>
+
+#define LCD_CS    GPIOC, GPIO_PIN_5
+#define LCD_DATA  GPIOC, GPIO_PIN_6
+#define LCD_CLK   GPIOC, GPIO_PIN_7
+
+#define HEAT_TIME_S 1800
+
+uint16_t co2;
+uint8_t hum;
+uint8_t temp;
 
 // ==== TIMER ====
 volatile uint32_t timer_s = 0;
-volatile uint8_t reg[16]={0};
+
 INTERRUPT_HANDLER(TIM1_UPD_OVF_TRG_BRK_IRQHandler, 11)
 {
   timer_s++;
@@ -12,9 +22,13 @@ INTERRUPT_HANDLER(TIM1_UPD_OVF_TRG_BRK_IRQHandler, 11)
 
 void InitTimer()
 {
-  TIM1_TimeBaseInit(2000,TIM1_COUNTERMODE_UP, 1000, 0);
+  // sec timer
+  TIM1_TimeBaseInit(16000,TIM1_COUNTERMODE_UP, 1000, 0);
   TIM1_ITConfig(TIM1_IT_UPDATE, ENABLE);
   TIM1_Cmd(ENABLE);
+  // us timer
+  TIM2_TimeBaseInit(TIM2_PRESCALER_16, 0xFFFF);
+  TIM2_Cmd(ENABLE);
 }
 
 // ==== UART ====
@@ -71,7 +85,7 @@ uint8_t RxUart(uint8_t *buff, uint16_t size)
 }
 
 // ==== I2C ====
-
+/*
 void InitI2C()
 {
 
@@ -85,72 +99,219 @@ void InitI2C()
   while ( I2C_GetFlagStatus(I2C_FLAG_ADDRESSSENTMATCHED) != SET) ;
   while ( I2C_GetFlagStatus(I2C_FLAG_TRANSMITTERRECEIVER) != SET) ;
 }
+*/
+// ==== GPIO ====
+void PinInit(void)
+{
+  // lcd
+  GPIO_Init(LCD_CS,    GPIO_MODE_OUT_OD_HIZ_FAST);//GPIO_MODE_OUT_PP_HIGH_FAST);
+  GPIO_Init(LCD_DATA,  GPIO_MODE_OUT_OD_HIZ_FAST);//GPIO_MODE_OUT_PP_HIGH_FAST);
+  GPIO_Init(LCD_CLK,   GPIO_MODE_OUT_OD_HIZ_FAST);//GPIO_MODE_OUT_PP_HIGH_FAST);
+  
+  // dht 11
+}
+
 
 // ==== INIT ====
 void Init(void)
 {
   // ==== CLK ====
-  /*
+  
   // Configure the Fcpu to DIV1
-    CLK_SYSCLKConfig(CLK_PRESCALER_CPUDIV1);    
-    // Configure the HSI prescaler to the optimal value 
-    CLK_SYSCLKConfig(CLK_PRESCALER_HSIDIV1);        
-    // Configure the system clock to use HSI clock source and to run at 16Mhz
-    CLK_ClockSwitchConfig(CLK_SWITCHMODE_AUTO, CLK_SOURCE_HSI, DISABLE, CLK_CURRENTCLOCKSTATE_DISABLE);
-*/
+  CLK_SYSCLKConfig(CLK_PRESCALER_CPUDIV1);    
+  // Configure the HSI prescaler to the optimal value 
+  CLK_SYSCLKConfig(CLK_PRESCALER_HSIDIV1);        
+  // Configure the system clock to use HSI clock source and to run at 16Mhz
+  CLK_ClockSwitchConfig(CLK_SWITCHMODE_AUTO, CLK_SOURCE_HSI, DISABLE, CLK_CURRENTCLOCKSTATE_DISABLE);
   
   enableInterrupts();
   InitTimer();
   InitUART();
-  InitI2C();
-  
-  // GPIO_Init(GPIOB, GPIO_PIN_5, GPIO_MODE_OUT_OD_LOW_SLOW);
-  
+  //InitI2C();
+  PinInit();  
 }
 
-void SendI2CData(uint16_t data)
+void Delay(uint16_t us)
+{
+  TIM2->CNTRL = 0;
+  TIM2->CNTRH = 0;
+  while( TIM2_GetCounter() < us);
+}
+
+// === LCD ===
+#define LCD_CMD_LCD_OFF       0x804 // 0b 100 0000 0010 0
+#define LCD_CMD_BIAS_13_4_COM 0x852 // 0b 100 0010 1001 0
+#define LCD_CMD_RC_256K       0x830 // 0b 100 0001 1000 0
+#define LCD_CMD_SYS_DIS       0x800 // 0b 100 0000 0000 0
+#define LCD_CMD_SYS_EN        0x802 // 0b 100 0000 0001 0
+#define LCD_CMD_LCD_ON        0x806 // 0b 100 0000 0011 0
+#define LCD_CMD_WDTDIS1       0x80A // 0b 100 0000 0011 0
+#define DL 10
+
+#define DELAY(US) do {timeStamp = TIM2->CNTRL + US; while (timeStamp > TIM2->CNTRL);}while(0)// до 255 мкс
+
+const uint8_t lcd_def[10] = 
+{
+  0x00,  
+  0x80,
+  0,
+  0,
+  0,  
+  0x80,
+  0,
+  0xC3,
+  0x80,
+  0
+};
+
+const uint8_t lcd_digit[12] = {0x5F, 0x50, 0x6B, 0x79, 0x74, 0x3D, 0x3F, 0x58, 0x7F, 0x7D, 0x2F}; // 0 1 2 3 4 5 6 7 8 9 E
+// Отправка нескольких бит (команда или код команды. Или байт). Только data и clk
+void LCD_SendWord(uint16_t word, uint8_t bits)
+{
+  uint8_t timeStamp;  
+  while(bits--)
+  {
+    GPIO_WriteLow(LCD_CLK);
+    timeStamp = TIM2->CNTRL + DL;
+    if(word & (1<<bits))     
+      GPIO_WriteHigh(LCD_DATA);
+    else
+      GPIO_WriteLow(LCD_DATA);
+    while (timeStamp > TIM2->CNTRL);
+    GPIO_WriteHigh(LCD_CLK);
+    DELAY(DL);
+  }
+ 
+}
+
+void LCD_SendCmd(uint16_t cmd)
 {  
-  data &= 0x0FFF;
-  while ( I2C_GetFlagStatus(I2C_FLAG_TXEMPTY) == RESET) ;
-  I2C_SendData(data>>8);
-  
-  while ( I2C_GetFlagStatus(I2C_FLAG_TXEMPTY) == RESET) ;
-  I2C_SendData(data);
-  while ( I2C_GetFlagStatus(I2C_FLAG_TRANSFERFINISHED) == RESET) ;
-  //I2C_GenerateSTOP(ENABLE);
+  uint8_t timeStamp;  
+  //static uint8_t isFirst = 1;
+  GPIO_WriteLow(LCD_CS);
+ /* if (isFirst)
+  {
+    GPIO_WriteLow(LCD_CLK);
+    GPIO_WriteLow(LCD_DATA);
+    Delay(3000);
+    isFirst = 0;
+  }*/
+  DELAY(DL);
+  LCD_SendWord(cmd, 12);
+  DELAY(DL);
+  GPIO_WriteHigh(LCD_CS);
+  DELAY(DL);
+  GPIO_WriteHigh(LCD_DATA);
+  DELAY(DL);
 }
 
-const double C = 423.8477;
-const double k = -17.2023;
-double y;
+
+// данных 32х4 бита = 16 байт
+void LCD_SendData(uint8_t data[10])
+{
+  uint8_t timeStamp;  
+  const uint16_t write = 0x140; // 0b101 000000
+  GPIO_WriteLow(LCD_CS);
+  DELAY(DL);
+  LCD_SendWord(write, 9);
+  DELAY(DL);
+  for (uint8_t i=0; i<10; i++)
+  {
+    LCD_SendWord(data[i], 8);
+    DELAY(DL);
+  }
+  GPIO_WriteHigh(LCD_CS);
+  DELAY(DL);
+  GPIO_WriteHigh(LCD_DATA);
+  DELAY(DL);
+}
+
+void valToLCD(uint16_t val, uint8_t *out) // Перевод числа в вывод LCD - 4 digs
+{  
+  if (val > 9999) val %= 10000;
+  *(out++) = val / 1000;
+  val = val % 1000;
+  *(out++) = val / 100;
+  val = val % 100;
+  *(out++) = val / 10;
+  *out = val % 10; 
+}
+
+void LCD_Update()
+{
+  uint8_t LCD_data[10];
+  memcpy(LCD_data, lcd_def, 10);
+  uint8_t tmp[4];
+  // co2
+  valToLCD(co2 & 0x7FFF, tmp);  
+  
+  LCD_data[4] |= (tmp[0] > 0) ? lcd_digit[tmp[0]] : 0;
+  LCD_data[3] |= lcd_digit[tmp[1]];
+  LCD_data[2] |= lcd_digit[tmp[2]];
+  LCD_data[1] |= lcd_digit[tmp[3]];      
+  
+  if (co2 & 0x8000) LCD_data[4] = lcd_digit[10];  
+  co2 &= 0x7FFF;
+  
+  LCD_data[0] |= 1<<3;
+  if (co2 >= 500)  LCD_data[0] |= 1<<2;
+  if (co2 >= 1000) LCD_data[0] |= 1<<1;
+  if (co2 >= 1500) LCD_data[0] |= 1<<0;
+  
+  // temp
+  valToLCD(temp & 0x7F, tmp);    
+  LCD_data[9] |= lcd_digit[tmp[2]];
+  LCD_data[8] |= lcd_digit[tmp[3]];      
+  if (temp & 0x80) LCD_data[9] = lcd_digit[11];
+    
+  // hum
+  valToLCD(hum & 0x7F, tmp);    
+  LCD_data[6] |= lcd_digit[tmp[2]];
+  LCD_data[5] |= lcd_digit[tmp[3]];      
+  if (hum & 0x80) LCD_data[6] = lcd_digit[11];
+  
+  LCD_SendData(LCD_data);
+
+}
+// ===========================================
+
 
 uint8_t TxBuff[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
 uint8_t RxBuff[9];
-volatile uint16_t CO2 = 0;
 
 int main( void )
 {
-  Init();
+  Init();  
+  uint32_t currentTim = timer_s;
+  while (currentTim == timer_s) ;
+ 
+  LCD_SendCmd(LCD_CMD_BIAS_13_4_COM);
+  LCD_SendCmd(LCD_CMD_RC_256K);  
+  LCD_SendCmd(LCD_CMD_SYS_DIS);  
+  LCD_SendCmd(LCD_CMD_WDTDIS1);
+  LCD_SendCmd(LCD_CMD_SYS_EN);  
+  LCD_SendCmd(LCD_CMD_LCD_ON);  
+   
   while(1)
   {  
-    uint32_t currentTim = timer_s;
+    currentTim = timer_s;
     while (currentTim == timer_s) ;
    
-    TxUart(TxBuff, sizeof(TxBuff));
-    RxUart(RxBuff, sizeof(RxBuff));
-    CO2 = (RxBuff[2]<<8) + RxBuff[3];
-    
-    if(timer_s <= 180)
+    if ( timer_s < HEAT_TIME_S)
     {
-      CO2 = 2800 - (10*timer_s);
+      co2 = HEAT_TIME_S - timer_s;
+      //co2 += 0x8000; // флаг установки символа H
     }
-    y = k*log(CO2) + C; // в мВ 
-    y *= 10;
-    // mV convert
-    uint32_t sample = (4096 * y) / 3300;
-    
-    
-    SendI2CData(sample);   
+    else
+    {
+      //TxUart(TxBuff, sizeof(TxBuff));
+      //RxUart(RxBuff, sizeof(RxBuff));
+      co2 = (RxBuff[2]<<8) + RxBuff[3];    
+    }
+    // DHT11_Update();
+    if (temp == 99) temp = 0; else temp++;
+    if (hum == 99) hum = 0; else hum++;
+    LCD_Update();    
   }
   
 }
