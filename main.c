@@ -277,15 +277,15 @@ void CO2_Update()
    uint8_t res = RxUart(RxBuff, sizeof(RxBuff));
    if (res == 0) 
    {
-     co2 = 0x8000 + 0; // E1 no answer
+     co2 = 0x8000 + 0; // E0 no answer
      return;
    }
    uint8_t cs = 0;
    for(char i=1; i<=7; i++)
      cs += RxBuff[i];
-   cs = 0xFF - cs;
+   cs = (0xFF - cs) + 1;
    if (cs != RxBuff[8])
-     co2 = 0x8000 + 1; // E2 - checksumm
+     co2 = 0x8000 + 1; // E1 - checksumm
    else
     co2 = (RxBuff[2]<<8) + RxBuff[3];   
 }
