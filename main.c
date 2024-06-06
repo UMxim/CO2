@@ -1,11 +1,11 @@
 #include "stm8s.h"
 #include <string.h>
 
-#define LCD_CS    GPIOC, GPIO_PIN_5
-#define LCD_DATA  GPIOC, GPIO_PIN_6
-#define LCD_CLK   GPIOC, GPIO_PIN_7
-#define DHT11_PIN GPIOD, GPIO_PIN_3
-
+#define LCD_CS          GPIOC, GPIO_PIN_5
+#define LCD_DATA        GPIOC, GPIO_PIN_6
+#define LCD_CLK         GPIOC, GPIO_PIN_7
+#define DHT11_PIN       GPIOD, GPIO_PIN_3
+#define CO2_CALIBRATION GPIOD, GPIO_PIN_4
 #define HEAT_TIME_S 180
 
 uint16_t co2;
@@ -105,11 +105,12 @@ void InitI2C()
 void PinInit(void)
 {
   // lcd
-  GPIO_Init(LCD_CS,    GPIO_MODE_OUT_OD_HIZ_FAST);//GPIO_MODE_OUT_PP_HIGH_FAST);
-  GPIO_Init(LCD_DATA,  GPIO_MODE_OUT_OD_HIZ_FAST);//GPIO_MODE_OUT_PP_HIGH_FAST);
-  GPIO_Init(LCD_CLK,   GPIO_MODE_OUT_OD_HIZ_FAST);//GPIO_MODE_OUT_PP_HIGH_FAST);
+  GPIO_Init(LCD_CS,    GPIO_MODE_OUT_OD_HIZ_FAST);
+  GPIO_Init(LCD_DATA,  GPIO_MODE_OUT_OD_HIZ_FAST);
+  GPIO_Init(LCD_CLK,   GPIO_MODE_OUT_OD_HIZ_FAST);
   
-  // dht 11
+  // calibration
+  GPIO_Init(CO2_CALIBRATION, GPIO_MODE_IN_PU_NO_IT);
 }
 
 
@@ -165,7 +166,7 @@ const uint8_t lcd_def[10] =
   0
 };
 
-const uint8_t lcd_digit[12] = {0x5F, 0x50, 0x6B, 0x79, 0x74, 0x3D, 0x3F, 0x58, 0x7F, 0x7D, 0x76, 0x2F}; // 0 1 2 3 4 5 6 7 8 9 H E
+const uint8_t lcd_digit[] = {0x5F, 0x50, 0x6B, 0x79, 0x74, 0x3D, 0x3F, 0x58, 0x7F, 0x7D, 0x76, 0x2F, 0x0F, 0xFE, 0x07 }; // 0 1 2 3 4 5 6 7 8 9 H E C A L
 // Отправка нескольких бит (команда или код команды. Или байт). Только data и clk
 void LCD_SendWord(uint16_t word, uint8_t bits)
 {  
@@ -227,32 +228,41 @@ void valToLCD(uint16_t val, uint8_t *out) // Перевод числа в вывод LCD - 4 digs
   *out = val % 10; 
 }
 
-void LCD_Update()
+void LCD_Update(uint8_t isCalibration)
 {
   uint8_t LCD_data[10];
   memcpy(LCD_data, lcd_def, 10);
   uint8_t tmp[4];
   // co2
-  valToLCD(co2 & 0x3FFF, tmp);  
-  
-  LCD_data[4] |= (tmp[0] > 0) ? lcd_digit[tmp[0]] : 0;
-  LCD_data[3] |= lcd_digit[tmp[1]];
-  LCD_data[2] |= lcd_digit[tmp[2]];
-  LCD_data[1] |= lcd_digit[tmp[3]];      
-  
-  if (co2 & 0x8000) LCD_data[4] = lcd_digit[11];  
-  if (co2 & 0x4000) 
+  if (isCalibration)
   {
-    LCD_data[4] = lcd_digit[10];  
-    co2 *= 10;
+    LCD_data[4] |= lcd_digit[0xC];
+    LCD_data[3] |= lcd_digit[0xD];
+    LCD_data[2] |= lcd_digit[0xE];
+    LCD_data[1] |= lcd_digit[0x8];      
   }
-  co2 &= 0x3FFF;
-  
-  LCD_data[0] |= 1<<3;
-  if (co2 >= 500)  LCD_data[0] |= 1<<2;
-  if (co2 >= 1000) LCD_data[0] |= 1<<1;
-  if (co2 >= 1500) LCD_data[0] |= 1<<0;
-  
+  else
+  {  
+    valToLCD(co2 & 0x3FFF, tmp);  
+    
+    LCD_data[4] |= (tmp[0] > 0) ? lcd_digit[tmp[0]] : 0;
+    LCD_data[3] |= lcd_digit[tmp[1]];
+    LCD_data[2] |= lcd_digit[tmp[2]];
+    LCD_data[1] |= lcd_digit[tmp[3]];      
+    
+    if (co2 & 0x8000) LCD_data[4] = lcd_digit[11];  
+    if (co2 & 0x4000) 
+    {
+      LCD_data[4] = lcd_digit[10];  
+      co2 *= 10;
+    }
+    co2 &= 0x3FFF;
+    
+    LCD_data[0] |= 1<<3;
+    if (co2 >= 500)  LCD_data[0] |= 1<<2;
+    if (co2 >= 1000) LCD_data[0] |= 1<<1;
+    if (co2 >= 1500) LCD_data[0] |= 1<<0;
+  }  
   // temp
   valToLCD(temp & 0x7F, tmp);    
   LCD_data[9] |= lcd_digit[tmp[2]];
@@ -269,11 +279,19 @@ void LCD_Update()
 
 }
 // ===========================================
-void CO2_Update()
+void CO2_Update(uint8_t isCalibration)
 {
-   const uint8_t TxBuff[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+   const uint8_t TxBuff_meas[9] =  {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+   const uint8_t TxBuff_calib[9] = {0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78};
    uint8_t RxBuff[9];
-   TxUart(TxBuff, sizeof(TxBuff));
+   
+   if (isCalibration)
+   {
+     TxUart(TxBuff_calib, sizeof(TxBuff_calib));
+     return;
+   }
+   
+   TxUart(TxBuff_meas, sizeof(TxBuff_meas));
    uint8_t res = RxUart(RxBuff, sizeof(RxBuff));
    if (res == 0) 
    {
@@ -369,8 +387,8 @@ int main( void )
 {
   Init();  
   uint32_t currentTim = timer_s;
+  uint8_t calibrationFlag = 0;
   while (currentTim == timer_s) ;
- 
   LCD_SendCmd(LCD_CMD_BIAS_13_4_COM);
   LCD_SendCmd(LCD_CMD_RC_256K);  
   LCD_SendCmd(LCD_CMD_SYS_DIS);  
@@ -381,19 +399,24 @@ int main( void )
   while(1)
   {  
     currentTim = timer_s;
-    while (currentTim == timer_s) ;    
+    while (currentTim == timer_s)
+      while (GPIO_ReadInputPin(CO2_CALIBRATION) == RESET)
+        calibrationFlag = 1;
+      
     if ( timer_s < HEAT_TIME_S)
     {
       co2 = HEAT_TIME_S - timer_s;
       co2 += 0x4000; // флаг установки символа H
     }
     else
-    {
-      CO2_Update();      
+    {      
+        CO2_Update(calibrationFlag);     
+        
     }
     DHT11_Update();
     
-    LCD_Update();    
+    LCD_Update(calibrationFlag);  
+    calibrationFlag = 0;
   }
   
 }
