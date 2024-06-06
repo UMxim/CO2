@@ -45,6 +45,10 @@ uint8_t TxUart(const uint8_t *buff, uint16_t size)
   uint32_t safeTimer = timer_s + 2;
   FlagStatus stat;
   
+  volatile uint8_t tmp;
+  while ( UART1_GetFlagStatus(UART1_FLAG_RXNE) != RESET)
+    tmp = UART1_ReceiveData8();  
+  
   while (size--)
   {
     UART1_SendData8(*buff++);  
@@ -112,7 +116,6 @@ void PinInit(void)
   // calibration
   GPIO_Init(CO2_CALIBRATION, GPIO_MODE_IN_PU_NO_IT);
 }
-
 
 // ==== INIT ====
 void Init(void)
@@ -233,6 +236,8 @@ void LCD_Update(uint8_t isCalibration)
   uint8_t LCD_data[10];
   memcpy(LCD_data, lcd_def, 10);
   uint8_t tmp[4];
+  static uint8_t count = 0;
+  count++;
   // co2
   if (isCalibration)
   {
@@ -274,7 +279,10 @@ void LCD_Update(uint8_t isCalibration)
   LCD_data[6] |= lcd_digit[tmp[2]];
   LCD_data[5] |= lcd_digit[tmp[3]];      
   if (hum & 0x80) LCD_data[6] = lcd_digit[11];
+  // bat count
+  LCD_data[0] |= ((count & 1) <<5) | (((count>>1) & 1)<<4) | (((count>>2) & 1)<<6);
   
+
   LCD_SendData(LCD_data);
 
 }
@@ -288,6 +296,7 @@ void CO2_Update(uint8_t isCalibration)
    if (isCalibration)
    {
      TxUart(TxBuff_calib, sizeof(TxBuff_calib));
+     RxUart(RxBuff, sizeof(RxBuff));
      return;
    }
    
@@ -384,11 +393,11 @@ void DHT11_Update()
 // ========================
 
 int main( void )
-{
+{    
   Init();  
   uint32_t currentTim = timer_s;
   uint8_t calibrationFlag = 0;
-  while (currentTim == timer_s) ;
+ 
   LCD_SendCmd(LCD_CMD_BIAS_13_4_COM);
   LCD_SendCmd(LCD_CMD_RC_256K);  
   LCD_SendCmd(LCD_CMD_SYS_DIS);  
@@ -400,21 +409,17 @@ int main( void )
   {  
     currentTim = timer_s;
     while (currentTim == timer_s)
-      while (GPIO_ReadInputPin(CO2_CALIBRATION) == RESET)
-        calibrationFlag = 1;
-      
+      while(GPIO_ReadInputPin(CO2_CALIBRATION) == RESET)
+        calibrationFlag = 1;      
+    
+    CO2_Update(calibrationFlag);    
     if ( timer_s < HEAT_TIME_S)
     {
       co2 = HEAT_TIME_S - timer_s;
       co2 += 0x4000; // флаг установки символа H
     }
-    else
-    {      
-        CO2_Update(calibrationFlag);     
-        
-    }
-    DHT11_Update();
     
+    DHT11_Update();    
     LCD_Update(calibrationFlag);  
     calibrationFlag = 0;
   }
