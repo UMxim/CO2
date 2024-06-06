@@ -4,6 +4,7 @@
 #define LCD_CS    GPIOC, GPIO_PIN_5
 #define LCD_DATA  GPIOC, GPIO_PIN_6
 #define LCD_CLK   GPIOC, GPIO_PIN_7
+#define DHT11_PIN GPIOD, GPIO_PIN_3
 
 #define HEAT_TIME_S 180
 
@@ -148,7 +149,7 @@ void Delay(uint16_t us)
 #define LCD_CMD_WDTDIS1       0x80A // 0b 100 0000 0011 0
 #define DL 10
 
-#define DELAY(US) do {timeStamp = TIM2->CNTRL + US; while (timeStamp > TIM2->CNTRL);}while(0)// до 255 мкс
+#define DELAY(US) do {TIM2->CNTRL = 0; while (TIM2->CNTRL < US);}while(0)// до 255 мкс
 
 const uint8_t lcd_def[10] = 
 {
@@ -167,17 +168,16 @@ const uint8_t lcd_def[10] =
 const uint8_t lcd_digit[12] = {0x5F, 0x50, 0x6B, 0x79, 0x74, 0x3D, 0x3F, 0x58, 0x7F, 0x7D, 0x76, 0x2F}; // 0 1 2 3 4 5 6 7 8 9 H E
 // Отправка нескольких бит (команда или код команды. Или байт). Только data и clk
 void LCD_SendWord(uint16_t word, uint8_t bits)
-{
-  uint8_t timeStamp;  
+{  
   while(bits--)
   {
     GPIO_WriteLow(LCD_CLK);
-    timeStamp = TIM2->CNTRL + DL;
+    
     if(word & (1<<bits))     
       GPIO_WriteHigh(LCD_DATA);
     else
       GPIO_WriteLow(LCD_DATA);
-    while (timeStamp > TIM2->CNTRL);
+    DELAY(DL);    
     GPIO_WriteHigh(LCD_CLK);
     DELAY(DL);
   }
@@ -185,17 +185,8 @@ void LCD_SendWord(uint16_t word, uint8_t bits)
 }
 
 void LCD_SendCmd(uint16_t cmd)
-{  
-  uint8_t timeStamp;  
-  //static uint8_t isFirst = 1;
-  GPIO_WriteLow(LCD_CS);
- /* if (isFirst)
-  {
-    GPIO_WriteLow(LCD_CLK);
-    GPIO_WriteLow(LCD_DATA);
-    Delay(3000);
-    isFirst = 0;
-  }*/
+{    
+  GPIO_WriteLow(LCD_CS); 
   DELAY(DL);
   LCD_SendWord(cmd, 12);
   DELAY(DL);
@@ -208,8 +199,7 @@ void LCD_SendCmd(uint16_t cmd)
 
 // данных 32х4 бита = 16 байт
 void LCD_SendData(uint8_t data[10])
-{
-  uint8_t timeStamp;  
+{  
   const uint16_t write = 0x140; // 0b101 000000
   GPIO_WriteLow(LCD_CS);
   DELAY(DL);
@@ -279,10 +269,101 @@ void LCD_Update()
 
 }
 // ===========================================
+void CO2_Update()
+{
+   const uint8_t TxBuff[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+   uint8_t RxBuff[9];
+   TxUart(TxBuff, sizeof(TxBuff));
+   uint8_t res = RxUart(RxBuff, sizeof(RxBuff));
+   if (res == 0) 
+   {
+     co2 = 0x8000 + 0; // E1 no answer
+     return;
+   }
+   uint8_t cs = 0;
+   for(char i=1; i<=7; i++)
+     cs += RxBuff[i];
+   cs = 0xFF - cs;
+   if (cs != RxBuff[8])
+     co2 = 0x8000 + 1; // E2 - checksumm
+   else
+    co2 = (RxBuff[2]<<8) + RxBuff[3];   
+}
 
+// ===================================
 
-uint8_t TxBuff[9] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
-uint8_t RxBuff[9] = {0,0,4,12};
+uint8_t DHT11_GetPulse() // 0, 1 or 0xFF-err
+{  
+  uint8_t ans;  
+  // wait low
+  TIM2->CNTRL = 0;
+  while(GPIO_ReadInputPin(DHT11_PIN) != RESET) 
+    if(TIM2->CNTRL > 0xF0) 
+      return 0xFF;
+  ans = (TIM2->CNTRL < 50) ? 0 : 1;  
+  
+  // wait hi
+  while(GPIO_ReadInputPin(DHT11_PIN) == RESET) 
+    if(TIM2->CNTRL > 0xF0) 
+      return 0xFF;
+  
+  return ans;  
+}
+
+void DHT11_Update()
+{
+  static uint8_t prediv = 0;
+  uint8_t res[5] = {0};
+  uint8_t bitN = 7;
+  uint8_t byteN = 0;
+  uint8_t cs;  
+ 
+  if (prediv++ & 0x7)
+    return;
+  
+  // out
+  GPIO_Init(DHT11_PIN, GPIO_MODE_OUT_OD_LOW_FAST);
+  Delay(20000);
+  GPIO_Init(DHT11_PIN, GPIO_MODE_IN_FL_NO_IT); 
+  // ack
+  if ( DHT11_GetPulse() == 0xFF) goto error;
+  if ( DHT11_GetPulse() == 0xFF) goto error;
+  // read data 
+    //wait down
+  for (char i=0; i<40 ;i++)
+  {
+    res[byteN] |= DHT11_GetPulse() << bitN;
+    if (bitN > 0) 
+      bitN--; 
+    else 
+    {
+      bitN = 7;
+      byteN++;
+    }    
+  }
+  
+  cs = res[0] + res[1] + res[2] + res[3];
+  if (res[4] != cs)
+  {
+    temp = 0x81;
+    hum = 0x81;  
+  }
+  else
+  {
+    temp = res[2];
+    hum = res[0];  
+  }
+  
+  return;
+  
+  error:
+    temp = 0x80;
+    hum = 0x80;
+     
+  
+}
+
+// ========================
 
 int main( void )
 {
@@ -300,8 +381,7 @@ int main( void )
   while(1)
   {  
     currentTim = timer_s;
-    while (currentTim == timer_s) ;
-   
+    while (currentTim == timer_s) ;    
     if ( timer_s < HEAT_TIME_S)
     {
       co2 = HEAT_TIME_S - timer_s;
@@ -309,13 +389,10 @@ int main( void )
     }
     else
     {
-      //TxUart(TxBuff, sizeof(TxBuff));
-      //RxUart(RxBuff, sizeof(RxBuff));
-      co2 = (RxBuff[2]<<8) + RxBuff[3];    
+      CO2_Update();      
     }
-    // DHT11_Update();
-    if (temp == 99) temp = 0; else temp++;
-    if (hum == 99) hum = 0; else hum++;
+    DHT11_Update();
+    
     LCD_Update();    
   }
   
